@@ -1,0 +1,839 @@
+--information:ParametricBG shared shader v1.0.0
+--hidemenu
+--require:2003700
+
+--[[pixelshader@pbg:
+Texture2D reftex:register(t0);
+Texture2D shapeA:register(t1);
+Texture2D shapeB:register(t2);
+Texture2D boundaryField:register(t3);
+Texture2D boundaryMax:register(t4);
+SamplerState smp:register(s0);
+cbuffer constant0:register(b0) { float4 c[45]; };
+float2 rotate2(float2 p,float a) { float s=sin(a),t=cos(a);return float2(t*p.x-s*p.y,s*p.x+t*p.y); }
+uint mixbits(uint x) { x^=x>>16; x*=0x7feb352d; x^=x>>15; x*=0x846ca68b; return x^(x>>16); }
+float hash(int2 p,uint channel,bool colorseed) {
+    uint seed=colorseed?((uint)c[3].z|((uint)c[3].w<<16)):((uint)c[3].x|((uint)c[3].y<<16));
+    return (mixbits(asuint(p.x)*0x9e3779b9^asuint(p.y)*0x85ebca6b^seed^channel)>>8)/16777216.0;
+}
+float smooth01(float x) { x=saturate(x);return x*x*(3-2*x); }
+float curve(float x) { x=saturate(x);if(c[7].w<.5)return smooth01(x);if(c[7].w<1.5)return x;if(c[7].w<2.5)return x*x;return 1-(1-x)*(1-x); }
+float axis(float2 p,float4 a) { return a.w<.0001?0:saturate(dot(p-a.xy,float2(cos(a.z),sin(a.z)))/a.w+.5); }
+float decodeDistance(float4 v){return (v.r*255*256+v.g*255)/65535;}
+float roundedBoxDistance(float2 p,float roundness,float2 size){
+ float r=min(roundness,max(0,min(size.x,size.y)*.5));
+ float2 v=(abs(p)-1)*size*.5+r;
+ return (length(max(v,0))+min(max(v.x,v.y),0)-r)/max(min(size.x,size.y)*.5,.0001);
+}
+float nativeDistance(float2 q,int type,float roundness,float2 size){
+ bool useB=(int)c[4].x!=type;
+ float2 dims=useB?c[28].zw:c[28].xy;
+ float2 halfsize=max(size*.5,.00001);
+ // At the rounding limit the shrunken contour is a position/segment. Evaluate
+ // its circular expansion analytically instead of sampling a collapsed image.
+ if(roundness>=min(halfsize.x,halfsize.y)*.9999)return roundedBoxDistance(q,roundness,size);
+ float radius=min(roundness,min(halfsize.x,halfsize.y)*.9999);
+ float2 extent=max(size-radius*2,.00001);
+ float2 uv=q*size/extent*.5+.5;
+ float2 lookup=clamp(uv,.5/dims,1-.5/dims);
+ float4 value=useB?shapeB.SampleLevel(smp,lookup,0):shapeA.SampleLevel(smp,lookup,0);
+ // The SDF is stored in texture pixels, while rounding is in object pixels.
+ // Once the query leaves the shrunken texture, keep each axis in object units:
+ // a nearly collapsed short axis must not also collapse the long-axis distance.
+ float distance=decodeDistance(value)*length(dims)*min(extent.x/dims.x,extent.y/dims.y);
+ bool outside=any(uv<0)||any(uv>1);
+ bool inside=value.b>=.5 && !outside;
+ if(outside){
+  float2 displacement=(uv-lookup)*extent;
+  distance=length(float2(length(displacement),distance));
+ }
+ distance=(inside?-distance:distance)-radius;
+ return distance/min(halfsize.x,halfsize.y);
+}
+// A shared, invertible position mapping keeps the grid attached to dot centers.
+float deformedRadius(float r){
+ float strength=c[36].z,range=c[36].w,phase=c[37].w;
+ if(c[36].y<1.5){
+  float k=6.283185307/c[37].z;
+  float amplitude=.85*strength/(k+1/range);
+  return r+amplitude*sin(k*r-phase)*(1-exp(-r/range));
+ }
+ return r*(1+.9*strength*cos(phase)*exp(-r*r/(range*range)));
+}
+float2 deformGridPoint(float2 position){
+ if(c[36].x<.5)return position;
+ float2 delta=position-c[37].xy;
+ if(c[36].y<.5)return position+float2(c[36].z*c[36].w*.25*sin(delta.y*6.283185307/c[37].z-c[37].w),0);
+ float radius=length(delta);
+ if(radius<1e-8)return position;
+ if(c[36].y<2.5 && c[36].y>1.5){
+  float angle=c[36].z*6.283185307*cos(c[37].w)*exp(-radius*radius/(c[36].w*c[36].w));
+  return c[37].xy+rotate2(delta,angle);
+ }
+ return c[37].xy+delta*(deformedRadius(radius)/radius);
+}
+float warpDisplacementBound(){
+ float strength=abs(c[36].z),range=c[36].w;
+ if(c[36].y<.5)return strength*range*.25;
+ if(c[36].y<1.5)return .85*strength/(6.283185307/c[37].z+1/range);
+ if(c[36].y<2.5)return strength*6.283185307*range*.428881943;
+ return .9*strength*range*.428881943;
+}
+float2 undeformGridPoint(float2 position){
+ if(c[36].x<.5)return position;
+ float2 delta=position-c[37].xy;
+ if(c[36].y<.5)return position-float2(c[36].z*c[36].w*.25*sin(delta.y*6.283185307/c[37].z-c[37].w),0);
+ float radius=length(delta);
+ if(radius<1e-8)return position;
+ if(c[36].y<2.5 && c[36].y>1.5){
+  float angle=c[36].z*6.283185307*cos(c[37].w)*exp(-radius*radius/(c[36].w*c[36].w));
+  return c[37].xy+rotate2(delta,-angle);
+ }
+ // Ripple strength is bounded so the radial map remains monotonic.
+ float bound=warpDisplacementBound();
+ float low=max(0,radius-bound),high=radius+bound;
+ [loop]for(int step=0;step<22;step++){
+  float middle=(low+high)*.5;
+  if(deformedRadius(middle)<radius)low=middle;else high=middle;
+ }
+ return c[37].xy+delta*((low+high)*.5/radius);
+}
+float inverseWarpStretch(){
+ if(c[36].x<.5)return 1;
+ float strength=abs(c[36].z);
+ if(c[36].y<.5)return 1+strength*c[36].w*.25*6.283185307/c[37].z;
+ if(c[36].y<1.5)return 1/max(1-.85*strength,.15);
+ if(c[36].y<2.5)return 1+2*strength*6.283185307/2.718281828;
+ return 1/max(1-.9*strength,.1);
+}
+float radial(float2 p) {
+ float2 signedq=rotate2(p-c[9].xy,-c[10].x)/c[9].zw;
+ float2 q=abs(signedq);
+ float result=c[10].y<.5?length(q):max(q.x,q.y);
+ if(c[10].y>1.5){
+  float2 uv=signedq*.5+.5;
+  float2 sampleUV=clamp(uv,.5/c[32].xy,1-.5/c[32].xy);
+  float4 value=boundaryField.SampleLevel(smp,sampleUV,0);
+  float d=decodeDistance(value)*c[32].z;
+  bool inside=value.b>=.5 && all(uv>=0) && all(uv<=1);
+  if(any(uv<0)||any(uv>1))d+=length((uv-saturate(uv))*c[32].xy);
+  float maxd=max(decodeDistance(boundaryMax.Load(int3(0,0,0)))*c[32].z,1);
+  result=max(0,1+(inside?-d:d)/maxd);
+ }
+ return result;
+}
+float noise2(float2 p) {
+    int2 i=(int2)floor(p);float2 f=frac(p);f=f*f*(3-2*f);
+    return lerp(lerp(hash(i,101,false),hash(i+int2(1,0),101,false),f.x),lerp(hash(i+int2(0,1),101,false),hash(i+1,101,false),f.x),f.y);
+}
+float field(float2 p) {
+    if(c[0].z==0)return 0;
+    if(c[0].z==2 || c[0].z==4)return pow(saturate(radial(p)),exp2((c[10].z-.5)*4));
+    float linearvalue=axis(p,c[8]);
+    if(c[0].z!=3 || c[11].y<=0)return linearvalue;
+    float2 n=(p+c[12].xy)/c[11].x+float2(cos(c[11].w),sin(c[11].w))*1.3;
+    float value=0,weight=0,amp=1;
+    [loop]for(int k=0;k<(int)c[11].z;k++){value+=noise2(n)*amp;weight+=amp;n=n*2.03+17.1;amp*=.5;}
+    float basis=linearvalue;
+    if(c[10].w>.5 && c[10].w<1.5)basis=pow(saturate(radial(p)),exp2((c[10].z-.5)*4));
+    return c[10].w>1.5?value/weight:saturate(lerp(basis,value/weight,c[11].y));
+}
+float2 imageUV(float2 p) {
+    float2 dims=c[16].xy, canvas=c[0].xy;
+    float scale=c[16].z<.5?min(canvas.x/dims.x,canvas.y/dims.y):max(canvas.x/dims.x,canvas.y/dims.y);
+    float2 extent=c[16].z>1.5?canvas:dims*scale;
+    return rotate2(p-c[17].xy,-c[17].z)/(extent*c[16].w)+.5;
+}
+float4 sampleRef(float2 p) {
+    float2 uv=imageUV(p);
+    return reftex.SampleLevel(smp,uv,0);
+}
+float4 endpointPaint(bool endpointB,int2 id,float2 stable,float baseAlpha){
+ int mode=(int)(endpointB?c[38].x:c[19].w);
+ float3 color=endpointB?c[38].yzw:c[22].rgb;
+ if(mode==1){
+  float4 weights=endpointB?c[43]:c[27];
+  float total=dot(weights,float4(1,1,1,1));
+  float random=hash(id,29,true);
+  if(endpointB){
+   uint seed=(uint)c[44].x|((uint)c[44].y<<16);
+   random=(mixbits(asuint(id.x)*0x9e3779b9^asuint(id.y)*0x85ebca6b^seed^29)>>8)/16777216.0;
+  }
+  float pick=random*total;
+  int index=total<=0?0:(pick<weights.x?0:(pick<weights.x+weights.y?1:(pick<weights.x+weights.y+weights.z?2:3)));
+  color=endpointB?c[39+index].rgb:c[23+index].rgb;
+ }
+ float4 result=float4(color,baseAlpha);
+ if(mode==3 && c[0].z==5)result=sampleRef(stable);
+ return result;
+}
+float2 signal(float2 p) {
+    float4 center=sampleRef(p), avg=center;
+    if(c[19].z<.5) {
+        avg=0;
+        [unroll]for(int j=-1;j<=1;j++)[unroll]for(int i=-1;i<=1;i++)avg+=sampleRef(p+float2(i,j)*c[1].xy/3);
+        avg/=9;
+    }
+    float alpha=avg.a;
+    float lum=dot(avg.rgb,float3(.2126,.7152,.0722));
+    float clum=dot(center.rgb,float3(.2126,.7152,.0722));
+    // Detail controls local deviation around the area average; neutral is 50%.
+    lum=saturate(lum+(clum-lum)*(c[18].y*2-1));
+    lum=saturate((lum-.5)*c[18].x+.5);
+    lum=lerp(lum,smooth01(lum),c[18].z);
+    float v=c[18].w>.5?lum:1-lum;
+    float gate=c[19].x<=0?1:(c[19].y<=0?step(c[19].x,v):smooth01((v-c[19].x)/max(c[19].y,.00001)));
+    return float2(v*gate,alpha);
+}
+float roundedPolygon(float2 p,int type,float radius,float2 size) {
+    float2 v[12];int count=0;
+    if(type==2){count=3;v[0]=float2(-1,-1);v[1]=float2(1,-1);v[2]=float2(0,1);}
+    if(type==3){count=4;v[0]=float2(0,-1);v[1]=float2(1,0);v[2]=float2(0,1);v[3]=float2(-1,0);}
+    if(type==4){count=6;v[0]=float2(-.5,-1);v[1]=float2(.5,-1);v[2]=float2(1,0);v[3]=float2(.5,1);v[4]=float2(-.5,1);v[5]=float2(-1,0);}
+    if(type==5){
+        float a=c[6].z;count=12;
+        v[0]=float2(-a,-1);v[1]=float2(a,-1);v[2]=float2(a,-a);v[3]=float2(1,-a);
+        v[4]=float2(1,a);v[5]=float2(a,a);v[6]=float2(a,1);v[7]=float2(-a,1);
+        v[8]=float2(-a,a);v[9]=float2(-1,a);v[10]=float2(-1,-a);v[11]=float2(-a,-a);
+    }
+    if(type==6){float a=max(c[6].w,.00001)*.5;count=8;
+        v[0]=float2(0,-1);v[1]=float2(a,-a);v[2]=float2(1,0);v[3]=float2(a,a);
+        v[4]=float2(0,1);v[5]=float2(-a,a);v[6]=float2(-1,0);v[7]=float2(-a,-a);
+    }
+    float2 halfsize=max(size*.5,.00001);
+    float r=min(radius,min(halfsize.x,halfsize.y)*.9999);
+    float2 samplepoint=p*halfsize;
+    float d=1e20;bool inside=false;
+    [loop]for(int i=0;i<count;i++){
+        int next_index=i+1;
+        if(next_index==count)next_index=0;
+        float2 a=v[i]*(halfsize-r),b=v[next_index]*(halfsize-r);
+        float2 edge=b-a,delta=samplepoint-a;
+        d=min(d,length(delta-edge*saturate(dot(delta,edge)/max(dot(edge,edge),1e-12))));
+        if((a.y>samplepoint.y)!=(b.y>samplepoint.y)){
+            if(samplepoint.x<(b.x-a.x)*(samplepoint.y-a.y)/(b.y-a.y)+a.x)inside=!inside;
+        }
+    }
+    return ((inside?-d:d)-r)/min(halfsize.x,halfsize.y);
+}
+// Shape functions are normalized to the unrotated width/height bounding box.
+float primitiveDistance(float2 p,int type,float roundness,float2 size) {
+    float2 a=abs(p);
+    if(type==0)return length(p)-1;
+    if(type>=2 && type<=6 && roundness>0)return roundedPolygon(p,type,roundness,size);
+    if(type==1)return roundedBoxDistance(p,roundness,size);
+    if(type==2)return max(-p.y-1,max(p.x*.894427+p.y*.447214-.447214,-p.x*.894427+p.y*.447214-.447214));
+    if(type==3)return (a.x+a.y-1)*.707107;
+    if(type==4)return max(a.y-1,(a.x*2+a.y-2)/sqrt(5.0));
+    if(type==5)return min(max(a.x-1,a.y-c[6].z),max(a.x-c[6].z,a.y-1));
+    float inner=max(c[6].w,.00001)*.5;
+    float2 q=a.x>a.y?a.yx:a;
+    return (q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);
+}
+float shapeDistance(float2 p,int type,float roundness,float2 size){
+ float result=primitiveDistance(p,min(type,6),roundness,size);
+ if(type>=8)result=nativeDistance(p,type,roundness,size);
+ return result;
+}
+float radiusAt(float2 dir,int type,float roundness,float2 size) {
+    // Bisection of a radial boundary provides an actual continuous outline morph.
+    float low=0,high=1.5;
+    [loop]for(int i=0;i<14;i++){float mid=(low+high)*.5;if(shapeDistance(dir*mid,type,roundness,size)>0)high=mid;else low=mid;}
+    return (low+high)*.5;
+}
+float4 pngSample(bool b,float2 q,float2 size) {
+    float2 dims=b?c[28].zw:c[28].xy;
+    float2 uv=q*.5;
+    if(c[29].x<1.5) {
+        float sc=c[29].x<.5?min(size.x/dims.x,size.y/dims.y):max(size.x/dims.x,size.y/dims.y);
+        uv*=size/max(dims*sc,.0001);
+    }
+    return b?shapeB.SampleLevel(smp,uv+.5,0):shapeA.SampleLevel(smp,uv+.5,0);
+}
+float strokeCoverage(float d,float footprint) {
+    float outer=saturate(.5-d/footprint);
+    if(c[30].x<=0 || c[30].x>=1/footprint)return outer;
+    return max(0,outer-saturate(.5-d/footprint-c[30].x));
+}
+float4 pngStroke(bool b,float2 q,float2 size) {
+    float4 value=pngSample(b,q,size);
+    if(c[30].x<=0 || c[30].x>=length(size))return value;
+    float inner=value.a;
+    // Erode Alpha in pixel space; source RGB stays independent of the cutout.
+    [loop]for(int k=0;k<16;k++){
+        float angle=k*6.283185307/16;
+        float2 offset=float2(cos(angle),sin(angle))*c[30].x*2/size;
+        inner=min(inner,pngSample(b,q+offset,size).a);
+    }
+    value.a=max(0,value.a-inner);
+    return value;
+}
+float4 flatCell(float2 localp,float2 size,float progress,float angle,float4 paintA,float4 paintB) {
+    if(min(size.x,size.y)<=.00001)return 0;
+    float2 q=rotate2(localp,-angle)/(size*.5);
+    int a=(int)c[4].x,b=(int)c[5].x;
+    bool morph=c[14].x>.5;
+    float footprint=max(2/min(size.x,size.y),.00001);
+    if(a==7 || (morph && b==7)) {
+        float4 av=0,bv=0;
+        if(a==7) av=pngStroke(false,q,size);
+        else av=float4(paintA.rgb,strokeCoverage(shapeDistance(q,a,c[6].x,size),footprint));
+        if(a==7 && c[19].w!=2)av.rgb=paintA.rgb;
+        av.a*=paintA.a;
+        if(!morph)return av;
+        if(b==7)bv=pngStroke(true,q,size);
+        else bv=float4(paintB.rgb,strokeCoverage(shapeDistance(q,b,c[6].y,size),footprint));
+        if(b==7 && c[38].x!=2)bv.rgb=paintB.rgb;
+        bv.a*=paintB.a;
+        // Assets crossfade in premultiplied space rather than inventing topology.
+        float alpha=lerp(av.a,bv.a,progress);
+        return float4(lerp(av.rgb*av.a,bv.rgb*bv.a,progress)/max(alpha,.00001),alpha);
+    }
+    float d;
+    if(!morph || a==b)d=shapeDistance(q,a,lerp(c[6].x,c[6].y,morph?progress:0),size);
+    else {
+        float len=length(q);float2 dir=len>.00001?q/len:float2(1,0);
+        d=len-lerp(radiusAt(dir,a,c[6].x,size),radiusAt(dir,b,c[6].y,size),progress);
+    }
+    float alpha=lerp(paintA.a,paintB.a,morph?progress:0);
+    float3 color=lerp(paintA.rgb*paintA.a,paintB.rgb*paintB.a,morph?progress:0)/max(alpha,.00001);
+    return float4(color,strokeCoverage(d,footprint)*alpha);
+}
+float4 cell(float2 localp,float2 size,float progress,float angle,float4 paintA,float4 paintB,out float shade) {
+    // Extrude in unit space, then rotate the complete silhouette about its midpoint.
+    float2 p=rotate2(localp,-angle);
+    float2 direction=float2(cos(c[30].z),sin(c[30].z));
+    float halfdepth=c[30].y*.5;
+    float2 bounds=size*.5+1;
+    float nearT=-halfdepth,farT=halfdepth;
+    shade=1;
+    if(abs(direction.x)>.00001){
+        float2 tx=float2((p.x-bounds.x)/direction.x,(p.x+bounds.x)/direction.x);
+        nearT=max(nearT,min(tx.x,tx.y));farT=min(farT,max(tx.x,tx.y));
+    }else if(abs(p.x)>bounds.x)return 0;
+    if(abs(direction.y)>.00001){
+        float2 ty=float2((p.y-bounds.y)/direction.y,(p.y+bounds.y)/direction.y);
+        nearT=max(nearT,min(ty.x,ty.y));farT=min(farT,max(ty.x,ty.y));
+    }else if(abs(p.y)>bounds.y)return 0;
+    // For a solid ellipse the swept maximum is the nearest position on its axis
+    // in normalized ellipse space; no repeated extrusion samples are needed.
+    if(c[30].y>0 && c[14].x<.5 && c[4].x==0 && (c[30].x<=0 || c[30].x>=min(size.x,size.y)*.5)){
+        float2 q=p/(size*.5),v=direction/(size*.5);
+        nearT=farT=clamp(dot(q,v)/max(dot(v,v),1e-12),-halfdepth,halfdepth);
+    }
+    float4 front=0,body=0;
+    int count=c[30].y<=0?0:max(0,(int)ceil(max(0,farT-nearT)/.75));
+    if(nearT>farT)return 0;
+    int last=c[30].y<=0?0:count+1;
+    [loop]for(int k=0;k<=last;k++){
+        float t=k==0?-halfdepth:lerp(nearT,farT,(float)(k-1)/max(count,1));
+        float4 value=flatCell(p-direction*t,size,progress,0,paintA,paintB);
+        if(k==0)front=value;
+        if(value.a>body.a)body=value;
+    }
+    float frontweight=saturate(front.a/max(body.a,.00001));
+    shade=c[30].y<=0?1:lerp(.68,1,frontweight);
+    body.rgb=lerp(body.rgb,front.rgb,frontweight);
+    return body;
+}
+float4 backing(float2 p){
+ float4 result=c[21];
+ if(c[0].z==5 && c[35].x>.5){
+  float4 original=sampleRef(p);
+  if(c[35].x>1.5)original.rgb=dot(original.rgb,float3(.2126,.7152,.0722));
+  float alpha=original.a+result.a*(1-original.a);
+  result.rgb=(original.rgb*original.a+result.rgb*result.a*(1-original.a))/max(alpha,.00001);
+  result.a=alpha;
+ }
+ return result;
+}
+float4 withGrid(float4 result,float2 g){
+ if(c[29].y>.5){
+  float2 lineDistance=abs(frac(g/c[1].xy+.5)-.5)*c[1].xy;
+  if(c[36].x>.5){
+   float2 gradient=float2(length(float2(ddx(g.x),ddy(g.x))),length(float2(ddx(g.y),ddy(g.y))));
+   lineDistance/=max(gradient,.00001);
+  }
+  float coverage=(1-saturate(min(lineDistance.x,lineDistance.y)))*c[29].z;
+  float alpha=coverage+result.a*(1-coverage);
+  result.rgb=(c[31].rgb*coverage+result.rgb*result.a*(1-coverage))/max(alpha,.00001);
+  result.a=alpha;
+ }
+ return result;
+}
+float4 pbg(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target {
+    float2 p=(uv-.5)*c[33].zw+c[33].xy;
+    float2 g=rotate2(undeformGridPoint(p)-c[2].xy,-c[2].z);
+    int renderKind=(int)c[34].z;
+    if(renderKind==2)return withGrid(backing(p),g);
+    int2 forcedID=(int2)c[34].xy;
+    if(renderKind==3)forcedID+=(int2)floor(pos.xy);
+    float maxw=c[14].x>.5?max(c[4].y,c[5].y):c[4].y;
+    float maxh=c[14].x>.5?max(c[4].z,c[5].z):c[4].z;
+    float maxradius=length(float2(maxw,maxh))*.5+c[30].y*.5;
+    // Transform the existing screen-aligned rejection box into grid space.
+    // This remains conservative even for rotated grids and antialiased edges.
+    float gridextent=(maxradius+1)*(abs(cos(c[2].z))+abs(sin(c[2].z)));
+    float2 search=gridextent*inverseWarpStretch()+c[1].xy*c[1].w*.5;
+    int rowfirst=(int)ceil((g.y-search.y)/c[1].y);
+    int rowlast=(int)floor((g.y+search.y)/c[1].y);
+    if(renderKind==1 || renderKind==3){rowfirst=forcedID.y;rowlast=forcedID.y;}
+    float4 accum=0;
+    float mask=0;
+    [loop]for(int j=rowfirst;j<=rowlast;j++) {
+      float stagger=(j&1)*c[1].z*.5;
+      int columnfirst=(int)ceil((g.x-search.x)/c[1].x-stagger);
+      int columnlast=(int)floor((g.x+search.x)/c[1].x-stagger);
+      if(renderKind==1 || renderKind==3){columnfirst=forcedID.x;columnlast=forcedID.x;}
+      [loop]for(int i=columnfirst;i<=columnlast;i++) {
+        int2 id=int2(i,j);
+        float2 centergrid=(float2(id)+float2(stagger,0))*c[1].xy;
+        float2 stable=rotate2(centergrid,c[2].z)+c[2].xy;
+        float2 jitter=0;
+        if(c[1].w>0)jitter=float2(hash(id,7,false),hash(id,13,false))-.5;
+        float2 center=deformGridPoint(rotate2(centergrid+jitter*c[1].xy*c[1].w,c[2].z)+c[2].xy);
+        if(renderKind!=3 && any(abs(p-center)>maxradius+1))continue;
+        float raw=0,s=1,prob=c[2].w,alpha=1;
+        bool linkedMorph=c[14].x>.5 && c[14].y>.5;
+        bool sizeActive=c[7].x<1 && c[7].y>0;
+        bool edgeActive=c[0].z==4;
+        bool shapeMode=c[0].z==2 || edgeActive;
+        bool needShape=shapeMode && (sizeActive || (edgeActive && c[13].x<1 && c[7].y>0) || (edgeActive && c[13].w>.5) || linkedMorph);
+        if(needShape){
+            float r=radial(stable);
+            float progress=pow(saturate(r),exp2((c[10].z-.5)*4));
+            if(edgeActive){
+                progress=c[12].z>=1?step(1,r):(c[12].w<=0?step(c[12].z,progress):saturate((progress-c[12].z)/max((1-c[12].z)*c[12].w,.00001)));
+            }
+            progress=curve(progress);
+            raw=progress;
+            float edgeAmount=c[7].z>.5?1-progress:progress;
+            if(sizeActive)s=lerp(1,lerp(c[7].x,1,1-edgeAmount),c[7].y);
+            if(edgeActive){
+                prob*=lerp(1,c[13].x,edgeAmount*c[7].y);
+                if(c[13].w>.5 && edgeAmount>=.999999)continue;
+            }
+        }else if((c[0].z==1 || c[0].z==3) && (sizeActive || linkedMorph)){
+            raw=field(stable);
+            if(sizeActive){float progress=curve(raw);if(c[7].z>.5)progress=1-progress;s=lerp(1,lerp(c[7].x,1,progress),c[7].y);}
+        }
+        if(c[0].z==5) {
+            float2 sig=signal(stable);raw=sig.x;alpha=sig.y;
+            if(c[17].w!=1)s=lerp(c[7].x,1,sig.x);
+            if(c[17].w>=1)prob*=sig.x;
+        }
+        if(prob<=0)continue;
+        if(prob<1 && hash(id,19,false)>=prob)continue;
+        float t=0;
+        if(c[14].x>.5){t=c[14].y>.5?raw:axis(stable,c[15]);if(c[14].z>.5)t=1-t;}
+        float2 size=lerp(c[4].yz,c[5].yz,t)*s*c[29].w;
+        if(min(size.x,size.y)<=.00001)continue;
+        float rotation=lerp(c[4].w,c[5].w,t);
+        bool orientA=c[4].x==2 || c[4].x>=8;
+        bool orientB=c[5].x==2 || c[5].x>=8;
+        float flipA=orientA && c[14].w>.5?((c[14].w<1.5?id.y:(id.x+id.y))&1)*3.141592654:0;
+        float flipB=orientB && c[35].y>.5?((c[35].y<1.5?id.y:(id.x+id.y))&1)*3.141592654:0;
+        rotation+=lerp(flipA,flipB,t);
+        float2 ext=abs(rotate2(float2(size.x,0),rotation))*.5+abs(rotate2(float2(0,size.y),rotation))*.5;
+        ext+=abs(rotate2(float2(cos(c[30].z),sin(c[30].z))*c[30].y*.5,rotation));
+        if(c[20].z>.5 && any(abs(center)+ext>c[0].xy*.5-c[20].xy))continue;
+        float4 paintA=endpointPaint(false,id,stable,alpha);
+        float4 paintB=c[14].x>.5?endpointPaint(true,id,stable,alpha):paintA;
+        if(renderKind==3){
+            if(max(paintA.a,paintB.a)*c[20].w<=0)continue;
+            if(any(abs(center)-ext>c[0].xy*.5-c[20].xy+1))continue;
+            return float4(1,1,1,1);
+        }
+        float shade;
+        float4 shape=cell(p-center,size,t,rotation,paintA,paintB,shade);
+        float a=shape.a*c[20].w;
+        float3 color=shape.rgb*shade;
+        mask= a+mask*(1-a);
+        accum.rgb=color*a+accum.rgb*(1-a);accum.a=a+accum.a*(1-a);
+      }
+    }
+    if(renderKind==3)return 0;
+    if(any(abs(p)>c[0].xy*.5-c[20].xy)){mask=0;accum=0;}
+    if(renderKind==1)return float4(accum.rgb/max(accum.a,.00001),accum.a);
+    if(c[0].w==1)return float4(mask,mask,mask,1);
+    if(c[0].w==2)return float4(1-mask,1-mask,1-mask,1);
+    if(c[0].w==3)return float4(c[21].rgb,c[21].a*(1-mask));
+    float4 base=backing(p);
+    float a=accum.a+base.a*(1-accum.a);
+    float3 rgb=(accum.rgb+base.rgb*base.a*(1-accum.a))/max(a,.00001);
+    return withGrid(float4(rgb,a),g);
+}
+
+]]
+
+--[[pixelshader@pbg_seed:
+Texture2D input0:register(t0);
+Texture2D input1:register(t1);
+SamplerState smp:register(s0);
+cbuffer args:register(b0){float4 b0;float4 b1;};
+float4 packPoint(uint2 p){return float4(p.x>>8,p.x&255,p.y>>8,p.y&255)/255;}
+float2 unpackPoint(float4 v){uint4 t=(uint4)round(saturate(v)*255);return float2(t.x*256+t.y,t.z*256+t.w);}
+float4 packDistance(float value,float inside){uint v=(uint)round(saturate(value)*65535);return float4((v>>8)/255.0,(v&255)/255.0,inside,1);}
+float distanceValue(float4 v){float2 t=round(saturate(v.rg)*255);return (t.x*256+t.y)/65535;}
+bool maskAt(int2 p,bool second){
+ if(any(p<0)||any(p>=(int2)b0.xy))return false;
+ float4 v=second?input1.Load(int3(p,0)):input0.Load(int3(p,0));
+ float mask=b0.w<.5?v.a:(1-dot(v.rgb,float3(.2126,.7152,.0722)))*v.a;
+ return mask>=.5;
+}
+float4 pbg_seed(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;bool center=maskAt(p,false);
+ bool edge=maskAt(p+int2(1,0),false)!=center||maskAt(p+int2(-1,0),false)!=center||maskAt(p+int2(0,1),false)!=center||maskAt(p+int2(0,-1),false)!=center;
+ return edge?packPoint((uint2)p):float4(1,1,1,1);
+}
+float4 pbg_jump(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 best=float2(65535,65535);float bestDistance=1e30;
+ [unroll]for(int y=-1;y<=1;y++)[unroll]for(int x=-1;x<=1;x++){
+  int2 q=p+int2(x,y)*(int)b0.z;
+  if(any(q<0)||any(q>=(int2)b0.xy))continue;
+  float2 candidate=unpackPoint(input0.Load(int3(q,0)));
+  if(candidate.x>=65535)continue;
+  float d=dot(candidate-p,candidate-p);
+  if(d<bestDistance){bestDistance=d;best=candidate;}
+ }
+ return packPoint((uint2)best);
+}
+float4 pbg_distance(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 nearest=unpackPoint(input0.Load(int3(p,0)));
+ float d=nearest.x>=65535?length(b0.xy):length(nearest-p);
+ return packDistance(d/length(b0.xy),maskAt(p,true)?1:0);
+}
+float4 pbg_max(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy*2;float value=0;
+ [unroll]for(int y=0;y<2;y++)[unroll]for(int x=0;x<2;x++){
+  int2 q=p+int2(x,y);
+  if(any(q>=(int2)b0.xy))continue;
+  float4 v=input0.Load(int3(q,0));
+  if(v.b>.5)value=max(value,distanceValue(v));
+ }
+ return packDistance(value,1);
+}
+
+float4 pbg_symbol(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ float2 p=abs((uv-.5)*2);float d=0;
+ if(b0.z==8)d=(p.x+p.y-1)*.70710678;
+ else if(b0.z==9)d=min(max(p.x-1,p.y-b1.x),max(p.x-b1.x,p.y-1));
+ else{float inner=max(b1.y,.00001)*.5;float2 q=p.x>p.y?p.yx:p;d=(q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);}
+ return float4(1,1,1,saturate(.5-d*min(b0.x,b0.y)*.5));
+}
+
+float4 pbg_resize(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ return input0.SampleLevel(smp,uv,0);
+}
+
+]]
+
+--[[pixelshader@pbg_jump:
+Texture2D input0:register(t0);
+Texture2D input1:register(t1);
+SamplerState smp:register(s0);
+cbuffer args:register(b0){float4 b0;float4 b1;};
+float4 packPoint(uint2 p){return float4(p.x>>8,p.x&255,p.y>>8,p.y&255)/255;}
+float2 unpackPoint(float4 v){uint4 t=(uint4)round(saturate(v)*255);return float2(t.x*256+t.y,t.z*256+t.w);}
+float4 packDistance(float value,float inside){uint v=(uint)round(saturate(value)*65535);return float4((v>>8)/255.0,(v&255)/255.0,inside,1);}
+float distanceValue(float4 v){float2 t=round(saturate(v.rg)*255);return (t.x*256+t.y)/65535;}
+bool maskAt(int2 p,bool second){
+ if(any(p<0)||any(p>=(int2)b0.xy))return false;
+ float4 v=second?input1.Load(int3(p,0)):input0.Load(int3(p,0));
+ float mask=b0.w<.5?v.a:(1-dot(v.rgb,float3(.2126,.7152,.0722)))*v.a;
+ return mask>=.5;
+}
+float4 pbg_seed(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;bool center=maskAt(p,false);
+ bool edge=maskAt(p+int2(1,0),false)!=center||maskAt(p+int2(-1,0),false)!=center||maskAt(p+int2(0,1),false)!=center||maskAt(p+int2(0,-1),false)!=center;
+ return edge?packPoint((uint2)p):float4(1,1,1,1);
+}
+float4 pbg_jump(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 best=float2(65535,65535);float bestDistance=1e30;
+ [unroll]for(int y=-1;y<=1;y++)[unroll]for(int x=-1;x<=1;x++){
+  int2 q=p+int2(x,y)*(int)b0.z;
+  if(any(q<0)||any(q>=(int2)b0.xy))continue;
+  float2 candidate=unpackPoint(input0.Load(int3(q,0)));
+  if(candidate.x>=65535)continue;
+  float d=dot(candidate-p,candidate-p);
+  if(d<bestDistance){bestDistance=d;best=candidate;}
+ }
+ return packPoint((uint2)best);
+}
+float4 pbg_distance(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 nearest=unpackPoint(input0.Load(int3(p,0)));
+ float d=nearest.x>=65535?length(b0.xy):length(nearest-p);
+ return packDistance(d/length(b0.xy),maskAt(p,true)?1:0);
+}
+float4 pbg_max(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy*2;float value=0;
+ [unroll]for(int y=0;y<2;y++)[unroll]for(int x=0;x<2;x++){
+  int2 q=p+int2(x,y);
+  if(any(q>=(int2)b0.xy))continue;
+  float4 v=input0.Load(int3(q,0));
+  if(v.b>.5)value=max(value,distanceValue(v));
+ }
+ return packDistance(value,1);
+}
+
+float4 pbg_symbol(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ float2 p=abs((uv-.5)*2);float d=0;
+ if(b0.z==8)d=(p.x+p.y-1)*.70710678;
+ else if(b0.z==9)d=min(max(p.x-1,p.y-b1.x),max(p.x-b1.x,p.y-1));
+ else{float inner=max(b1.y,.00001)*.5;float2 q=p.x>p.y?p.yx:p;d=(q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);}
+ return float4(1,1,1,saturate(.5-d*min(b0.x,b0.y)*.5));
+}
+
+float4 pbg_resize(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ return input0.SampleLevel(smp,uv,0);
+}
+
+]]
+
+--[[pixelshader@pbg_distance:
+Texture2D input0:register(t0);
+Texture2D input1:register(t1);
+SamplerState smp:register(s0);
+cbuffer args:register(b0){float4 b0;float4 b1;};
+float4 packPoint(uint2 p){return float4(p.x>>8,p.x&255,p.y>>8,p.y&255)/255;}
+float2 unpackPoint(float4 v){uint4 t=(uint4)round(saturate(v)*255);return float2(t.x*256+t.y,t.z*256+t.w);}
+float4 packDistance(float value,float inside){uint v=(uint)round(saturate(value)*65535);return float4((v>>8)/255.0,(v&255)/255.0,inside,1);}
+float distanceValue(float4 v){float2 t=round(saturate(v.rg)*255);return (t.x*256+t.y)/65535;}
+bool maskAt(int2 p,bool second){
+ if(any(p<0)||any(p>=(int2)b0.xy))return false;
+ float4 v=second?input1.Load(int3(p,0)):input0.Load(int3(p,0));
+ float mask=b0.w<.5?v.a:(1-dot(v.rgb,float3(.2126,.7152,.0722)))*v.a;
+ return mask>=.5;
+}
+float4 pbg_seed(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;bool center=maskAt(p,false);
+ bool edge=maskAt(p+int2(1,0),false)!=center||maskAt(p+int2(-1,0),false)!=center||maskAt(p+int2(0,1),false)!=center||maskAt(p+int2(0,-1),false)!=center;
+ return edge?packPoint((uint2)p):float4(1,1,1,1);
+}
+float4 pbg_jump(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 best=float2(65535,65535);float bestDistance=1e30;
+ [unroll]for(int y=-1;y<=1;y++)[unroll]for(int x=-1;x<=1;x++){
+  int2 q=p+int2(x,y)*(int)b0.z;
+  if(any(q<0)||any(q>=(int2)b0.xy))continue;
+  float2 candidate=unpackPoint(input0.Load(int3(q,0)));
+  if(candidate.x>=65535)continue;
+  float d=dot(candidate-p,candidate-p);
+  if(d<bestDistance){bestDistance=d;best=candidate;}
+ }
+ return packPoint((uint2)best);
+}
+float4 pbg_distance(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 nearest=unpackPoint(input0.Load(int3(p,0)));
+ float d=nearest.x>=65535?length(b0.xy):length(nearest-p);
+ return packDistance(d/length(b0.xy),maskAt(p,true)?1:0);
+}
+float4 pbg_max(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy*2;float value=0;
+ [unroll]for(int y=0;y<2;y++)[unroll]for(int x=0;x<2;x++){
+  int2 q=p+int2(x,y);
+  if(any(q>=(int2)b0.xy))continue;
+  float4 v=input0.Load(int3(q,0));
+  if(v.b>.5)value=max(value,distanceValue(v));
+ }
+ return packDistance(value,1);
+}
+
+float4 pbg_symbol(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ float2 p=abs((uv-.5)*2);float d=0;
+ if(b0.z==8)d=(p.x+p.y-1)*.70710678;
+ else if(b0.z==9)d=min(max(p.x-1,p.y-b1.x),max(p.x-b1.x,p.y-1));
+ else{float inner=max(b1.y,.00001)*.5;float2 q=p.x>p.y?p.yx:p;d=(q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);}
+ return float4(1,1,1,saturate(.5-d*min(b0.x,b0.y)*.5));
+}
+
+float4 pbg_resize(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ return input0.SampleLevel(smp,uv,0);
+}
+
+]]
+
+--[[pixelshader@pbg_max:
+Texture2D input0:register(t0);
+Texture2D input1:register(t1);
+SamplerState smp:register(s0);
+cbuffer args:register(b0){float4 b0;float4 b1;};
+float4 packPoint(uint2 p){return float4(p.x>>8,p.x&255,p.y>>8,p.y&255)/255;}
+float2 unpackPoint(float4 v){uint4 t=(uint4)round(saturate(v)*255);return float2(t.x*256+t.y,t.z*256+t.w);}
+float4 packDistance(float value,float inside){uint v=(uint)round(saturate(value)*65535);return float4((v>>8)/255.0,(v&255)/255.0,inside,1);}
+float distanceValue(float4 v){float2 t=round(saturate(v.rg)*255);return (t.x*256+t.y)/65535;}
+bool maskAt(int2 p,bool second){
+ if(any(p<0)||any(p>=(int2)b0.xy))return false;
+ float4 v=second?input1.Load(int3(p,0)):input0.Load(int3(p,0));
+ float mask=b0.w<.5?v.a:(1-dot(v.rgb,float3(.2126,.7152,.0722)))*v.a;
+ return mask>=.5;
+}
+float4 pbg_seed(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;bool center=maskAt(p,false);
+ bool edge=maskAt(p+int2(1,0),false)!=center||maskAt(p+int2(-1,0),false)!=center||maskAt(p+int2(0,1),false)!=center||maskAt(p+int2(0,-1),false)!=center;
+ return edge?packPoint((uint2)p):float4(1,1,1,1);
+}
+float4 pbg_jump(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 best=float2(65535,65535);float bestDistance=1e30;
+ [unroll]for(int y=-1;y<=1;y++)[unroll]for(int x=-1;x<=1;x++){
+  int2 q=p+int2(x,y)*(int)b0.z;
+  if(any(q<0)||any(q>=(int2)b0.xy))continue;
+  float2 candidate=unpackPoint(input0.Load(int3(q,0)));
+  if(candidate.x>=65535)continue;
+  float d=dot(candidate-p,candidate-p);
+  if(d<bestDistance){bestDistance=d;best=candidate;}
+ }
+ return packPoint((uint2)best);
+}
+float4 pbg_distance(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 nearest=unpackPoint(input0.Load(int3(p,0)));
+ float d=nearest.x>=65535?length(b0.xy):length(nearest-p);
+ return packDistance(d/length(b0.xy),maskAt(p,true)?1:0);
+}
+float4 pbg_max(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy*2;float value=0;
+ [unroll]for(int y=0;y<2;y++)[unroll]for(int x=0;x<2;x++){
+  int2 q=p+int2(x,y);
+  if(any(q>=(int2)b0.xy))continue;
+  float4 v=input0.Load(int3(q,0));
+  if(v.b>.5)value=max(value,distanceValue(v));
+ }
+ return packDistance(value,1);
+}
+
+float4 pbg_symbol(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ float2 p=abs((uv-.5)*2);float d=0;
+ if(b0.z==8)d=(p.x+p.y-1)*.70710678;
+ else if(b0.z==9)d=min(max(p.x-1,p.y-b1.x),max(p.x-b1.x,p.y-1));
+ else{float inner=max(b1.y,.00001)*.5;float2 q=p.x>p.y?p.yx:p;d=(q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);}
+ return float4(1,1,1,saturate(.5-d*min(b0.x,b0.y)*.5));
+}
+
+float4 pbg_resize(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ return input0.SampleLevel(smp,uv,0);
+}
+
+]]
+
+--[[pixelshader@pbg_symbol:
+Texture2D input0:register(t0);
+Texture2D input1:register(t1);
+SamplerState smp:register(s0);
+cbuffer args:register(b0){float4 b0;float4 b1;};
+float4 packPoint(uint2 p){return float4(p.x>>8,p.x&255,p.y>>8,p.y&255)/255;}
+float2 unpackPoint(float4 v){uint4 t=(uint4)round(saturate(v)*255);return float2(t.x*256+t.y,t.z*256+t.w);}
+float4 packDistance(float value,float inside){uint v=(uint)round(saturate(value)*65535);return float4((v>>8)/255.0,(v&255)/255.0,inside,1);}
+float distanceValue(float4 v){float2 t=round(saturate(v.rg)*255);return (t.x*256+t.y)/65535;}
+bool maskAt(int2 p,bool second){
+ if(any(p<0)||any(p>=(int2)b0.xy))return false;
+ float4 v=second?input1.Load(int3(p,0)):input0.Load(int3(p,0));
+ float mask=b0.w<.5?v.a:(1-dot(v.rgb,float3(.2126,.7152,.0722)))*v.a;
+ return mask>=.5;
+}
+float4 pbg_seed(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;bool center=maskAt(p,false);
+ bool edge=maskAt(p+int2(1,0),false)!=center||maskAt(p+int2(-1,0),false)!=center||maskAt(p+int2(0,1),false)!=center||maskAt(p+int2(0,-1),false)!=center;
+ return edge?packPoint((uint2)p):float4(1,1,1,1);
+}
+float4 pbg_jump(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 best=float2(65535,65535);float bestDistance=1e30;
+ [unroll]for(int y=-1;y<=1;y++)[unroll]for(int x=-1;x<=1;x++){
+  int2 q=p+int2(x,y)*(int)b0.z;
+  if(any(q<0)||any(q>=(int2)b0.xy))continue;
+  float2 candidate=unpackPoint(input0.Load(int3(q,0)));
+  if(candidate.x>=65535)continue;
+  float d=dot(candidate-p,candidate-p);
+  if(d<bestDistance){bestDistance=d;best=candidate;}
+ }
+ return packPoint((uint2)best);
+}
+float4 pbg_distance(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 nearest=unpackPoint(input0.Load(int3(p,0)));
+ float d=nearest.x>=65535?length(b0.xy):length(nearest-p);
+ return packDistance(d/length(b0.xy),maskAt(p,true)?1:0);
+}
+float4 pbg_max(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy*2;float value=0;
+ [unroll]for(int y=0;y<2;y++)[unroll]for(int x=0;x<2;x++){
+  int2 q=p+int2(x,y);
+  if(any(q>=(int2)b0.xy))continue;
+  float4 v=input0.Load(int3(q,0));
+  if(v.b>.5)value=max(value,distanceValue(v));
+ }
+ return packDistance(value,1);
+}
+
+float4 pbg_symbol(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ float2 p=abs((uv-.5)*2);float d=0;
+ if(b0.z==8)d=(p.x+p.y-1)*.70710678;
+ else if(b0.z==9)d=min(max(p.x-1,p.y-b1.x),max(p.x-b1.x,p.y-1));
+ else{float inner=max(b1.y,.00001)*.5;float2 q=p.x>p.y?p.yx:p;d=(q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);}
+ return float4(1,1,1,saturate(.5-d*min(b0.x,b0.y)*.5));
+}
+
+float4 pbg_resize(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ return input0.SampleLevel(smp,uv,0);
+}
+
+]]
+
+--[[pixelshader@pbg_resize:
+Texture2D input0:register(t0);
+Texture2D input1:register(t1);
+SamplerState smp:register(s0);
+cbuffer args:register(b0){float4 b0;float4 b1;};
+float4 packPoint(uint2 p){return float4(p.x>>8,p.x&255,p.y>>8,p.y&255)/255;}
+float2 unpackPoint(float4 v){uint4 t=(uint4)round(saturate(v)*255);return float2(t.x*256+t.y,t.z*256+t.w);}
+float4 packDistance(float value,float inside){uint v=(uint)round(saturate(value)*65535);return float4((v>>8)/255.0,(v&255)/255.0,inside,1);}
+float distanceValue(float4 v){float2 t=round(saturate(v.rg)*255);return (t.x*256+t.y)/65535;}
+bool maskAt(int2 p,bool second){
+ if(any(p<0)||any(p>=(int2)b0.xy))return false;
+ float4 v=second?input1.Load(int3(p,0)):input0.Load(int3(p,0));
+ float mask=b0.w<.5?v.a:(1-dot(v.rgb,float3(.2126,.7152,.0722)))*v.a;
+ return mask>=.5;
+}
+float4 pbg_seed(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;bool center=maskAt(p,false);
+ bool edge=maskAt(p+int2(1,0),false)!=center||maskAt(p+int2(-1,0),false)!=center||maskAt(p+int2(0,1),false)!=center||maskAt(p+int2(0,-1),false)!=center;
+ return edge?packPoint((uint2)p):float4(1,1,1,1);
+}
+float4 pbg_jump(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 best=float2(65535,65535);float bestDistance=1e30;
+ [unroll]for(int y=-1;y<=1;y++)[unroll]for(int x=-1;x<=1;x++){
+  int2 q=p+int2(x,y)*(int)b0.z;
+  if(any(q<0)||any(q>=(int2)b0.xy))continue;
+  float2 candidate=unpackPoint(input0.Load(int3(q,0)));
+  if(candidate.x>=65535)continue;
+  float d=dot(candidate-p,candidate-p);
+  if(d<bestDistance){bestDistance=d;best=candidate;}
+ }
+ return packPoint((uint2)best);
+}
+float4 pbg_distance(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy;float2 nearest=unpackPoint(input0.Load(int3(p,0)));
+ float d=nearest.x>=65535?length(b0.xy):length(nearest-p);
+ return packDistance(d/length(b0.xy),maskAt(p,true)?1:0);
+}
+float4 pbg_max(float4 pos:SV_Position):SV_Target{
+ int2 p=(int2)pos.xy*2;float value=0;
+ [unroll]for(int y=0;y<2;y++)[unroll]for(int x=0;x<2;x++){
+  int2 q=p+int2(x,y);
+  if(any(q>=(int2)b0.xy))continue;
+  float4 v=input0.Load(int3(q,0));
+  if(v.b>.5)value=max(value,distanceValue(v));
+ }
+ return packDistance(value,1);
+}
+
+float4 pbg_symbol(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ float2 p=abs((uv-.5)*2);float d=0;
+ if(b0.z==8)d=(p.x+p.y-1)*.70710678;
+ else if(b0.z==9)d=min(max(p.x-1,p.y-b1.x),max(p.x-b1.x,p.y-1));
+ else{float inner=max(b1.y,.00001)*.5;float2 q=p.x>p.y?p.yx:p;d=(q.x*(1-inner)+q.y*inner-inner)/sqrt((1-inner)*(1-inner)+inner*inner);}
+ return float4(1,1,1,saturate(.5-d*min(b0.x,b0.y)*.5));
+}
+
+float4 pbg_resize(float4 pos:SV_Position,float2 uv:TEXCOORD):SV_Target{
+ return input0.SampleLevel(smp,uv,0);
+}
+
+]]

@@ -1,0 +1,334 @@
+--information:ParametricBG - シェイプ v1.0.0
+--label:カスタムオブジェクト\ParametricBG
+--require:2003700
+--group:背景,false
+--check@custom:カスタムサイズ,false
+--track@cw:キャンバス幅px,1,16384,1920,1
+--track@ch:キャンバス高さpx,1,16384,1080,1
+--color@bg:背景色,0xF5F1E9
+--check@transparent:背景透過,false
+--track@bga:背景不透明度%,0,100,0,1
+--track@opacity:図形不透明度%,0,100,100,1
+--select@output:出力モード,カラー=0,マスク=1,反転マスク=2,透明くり抜き=3
+--track@marginx:余白X px,0,8192,0,1
+--track@marginy:余白Y px,0,8192,0,1
+--check@whole:端の図形除外,false
+--group
+--group:形状,false
+--select@shapea:形状,円=0,四角形=1,三角形=2,五角形=3,六角形=4,星型=5,ハート=6,ひし形=7,十字=8,四芒星=9,(ファイルから選択)=10
+--file@filea:素材ファイル
+--track@wa:長さpx,0,4096,8,0.1
+--track@ha:高さpx,0,4096,8,0.1
+--track@ra:角丸px,0,2048,0,0.1
+--track@depth:厚みpx,0,4096,0,0.1
+--track@depth_angle:押出方向°,0,360,45,0.1
+--track@linewidth:線幅px,1,2048,2048,0.1
+--track@aa:回転°,-36000,36000,0,0.1
+--select@tri:向き=2,固定=0,一行おきに反転=1,市松反転=2
+--track@arm:十字の太さ%,1,100,30,1
+--track@star:星のくぼみ%,0,100,40,1
+--select@assetfit:合わせ方,全体を表示=0,切抜き表示=1,引き伸ばし=2
+--select@paint:カラーモード,単色=0,4色ランダム=1,素材の色=2
+--color@fg:図形色,0x202020
+--color@col1:ランダム色1,0x00A8E7
+--track@weight1:色1%,0,100,25,1
+--color@col2:ランダム色2,0xE40087
+--track@weight2:色2%,0,100,25,1
+--color@col3:ランダム色3,0xF7EA00
+--track@weight3:色3%,0,100,25,1
+--color@col4:ランダム色4,0x000000
+--track@weight4:色4%,0,100,25,1
+--track@color_seed:カラーシード,0,2147483647,7421,1
+--group
+--group:格子,false
+--track@sx:横間隔px,1,4096,24,0.1
+--track@sy:縦間隔px,1,4096,24,0.1
+--check@stagger:交互ずらし,false
+--check@hexgrid:六角格子,false
+--track@gx:格子オフセットX px,-32768,32768,0,0.1
+--track@gy:格子オフセットY px,-32768,32768,0,0.1
+--track@ga:格子回転°,-36000,36000,0,0.1
+--track@jitter:位置乱れ%,0,100,0,1
+--track@density:発生密度%,0,100,100,1
+--track@seed:配置シード,0,2147483647,7421,1
+--track@gridalpha:格子不透明度%,0,100,0,1,オフ
+--color@gridcolor:格子色,0x4d8ccc
+--group
+--group:サイズ分布,false
+--select@boundary:ラジアル境界,円=0,四角形=1,三角形=2,五角形=3,六角形=4,星型=5,ハート=6,ひし形=7,十字=8,四芒星=9,(ファイルから選択)=10
+--track@focus:集中度%,0,100,50,1
+--file@boundaryfile:境界素材ファイル
+--select@boundary_channel:境界サンプリング,Alpha=0,明るさ=1
+--track@minimum:最小サイズ%,0,100,0,1
+--track@strength:変化強度%,0,100,100,1
+--check@reverse:サイズ分布反転,false
+--select@curve:変化曲線,なめらか=0,リニア=1,イーズイン=2,イーズアウト=3
+--track@rx:ラジアル中心X px,-32768,32768,0,0.1
+--track@ry:ラジアル中心Y px,-32768,32768,0,0.1
+--track@rw:横半径px,0.1,32768,378,0.1
+--track@rh:縦半径px,0.1,32768,378,0.1
+--track@rot:ラジアル角度°,-36000,36000,0,0.1
+--group
+--group:エッジ設定,false
+--check@edge_random:エッジランダム,false
+--track@core:整列範囲%,0,100,40,1
+--track@soft:エッジぼかし%,0,100,70,1
+--track@edge_density:エッジ密度%,0,100,30,1
+--check@outside_hide:端部を隠す,false
+--group
+--group:形状変化,false
+--check@morph:B 形状変化,false
+--select@shapeb:B 形状,円=0,四角形=1,三角形=2,五角形=3,六角形=4,星型=5,ハート=6,ひし形=7,十字=8,四芒星=9,(ファイルから選択)=10
+--file@fileb:B 素材ファイル
+--track@wb:B 長さpx,0,4096,16,0.1
+--track@hb:B 高さpx,0,4096,16,0.1
+--track@rb:B 角丸px,0,2048,0,0.1
+--track@ab:B 回転°,-36000,36000,0,0.1
+--select@trib:B 向き=2,固定=0,一行おきに反転=1,市松反転=2
+--select@morph_source:B 変化ソース,専用リニア軸=0,分布に追従=1
+--check@morph_reverse:B 形状変化反転,false
+--check@shortest:B 最短回転ルート,false
+--track@mx:B 変化軸X px,-32768,32768,0,0.1
+--track@my:B 変化軸Y px,-32768,32768,0,0.1
+--track@ma:B 変化軸角度°,-36000,36000,0,0.1
+--track@ml:B 変化軸長px,0,32768,960,0.1
+--select@paintb:B カラーモード=4,単色=0,4色ランダム=1,素材の色=2,Aカラーに従う=4
+--color@fgb:B 図形色,0x202020
+--color@colb1:B ランダム色1,0x00A8E7
+--track@weightb1:B 色1%,0,100,25,1
+--color@colb2:B ランダム色2,0xE40087
+--track@weightb2:B 色2%,0,100,25,1
+--color@colb3:B ランダム色3,0xF7EA00
+--track@weightb3:B 色3%,0,100,25,1
+--color@colb4:B ランダム色4,0x000000
+--track@weightb4:B 色4%,0,100,25,1
+--track@color_seedb:B カラーシード,0,2147483647,7421,1
+--group
+--group:動き,false
+--track@vx:移動X px/s,-4096,4096,0,0.1
+--track@vy:移動Y px/s,-4096,4096,0,0.1
+--track@breath:サイズ脈動%,0,100,0,1
+--track@period:脈動周期s,0.1,120,4,0.1
+--track@bp:脈動位相°,-36000,36000,0,0.1
+--group
+--hide@cw:custom==0
+--hide@ch:custom==0
+--hide@bga:transparent==0
+--hide@filea:shapea~=10
+--hide@assetfit:shapea~=10
+--hide@ra:shapea==0
+--hide@ra:shapea==10
+--hide@arm:shapea~=8
+--hide@star:shapea~=9
+--hide@shapeb:morph==0
+--hide@fileb:morph==0
+--hide@wb:morph==0
+--hide@hb:morph==0
+--hide@rb:morph==0
+--hide@ab:morph==0
+--hide@morph_source:morph==0
+--hide@morph_reverse:morph==0
+--hide@shortest:morph==0
+--hide@mx:morph==0
+--hide@my:morph==0
+--hide@ma:morph==0
+--hide@ml:morph==0
+--hide@fileb:shapeb~=10
+--hide@rb:shapeb==0
+--hide@rb:shapeb==10
+--hide@mx:morph_source~=0
+--hide@my:morph_source~=0
+--hide@ma:morph_source~=0
+--hide@ml:morph_source~=0
+--hide@fg:paint==1
+--hide@col1:paint~=1
+--hide@col2:paint~=1
+--hide@col3:paint~=1
+--hide@col4:paint~=1
+--hide@weight1:paint~=1
+--hide@weight2:paint~=1
+--hide@weight3:paint~=1
+--hide@weight4:paint~=1
+--hide@color_seed:paint~=1
+--hide@sy:hexgrid==1
+--hide@stagger:hexgrid==1
+
+--hide@trib:morph==0
+--hide@trib:shapeb==0
+--hide@trib:shapeb==1
+--hide@trib:shapeb==7
+--hide@trib:shapeb==4
+--hide@trib:shapeb==8
+--hide@trib:shapeb==9
+--hide@trib:shapeb==10
+--hide@tri:shapea==0
+--hide@tri:shapea==1
+--hide@tri:shapea==7
+--hide@tri:shapea==4
+--hide@tri:shapea==8
+--hide@tri:shapea==9
+--hide@tri:shapea==10
+--hide@boundaryfile:boundary~=10
+--hide@boundary_channel:boundary~=10
+--hide@core:edge_random==0
+--hide@soft:edge_random==0
+--hide@edge_density:edge_random==0
+--hide@outside_hide:edge_random==0
+--group:エフェクト処理,false
+--check@warp:格子の変形,false
+--select@warptype:変形タイプ,ウェーブ=0,波紋=1,渦巻き=2,膨張・収縮=3
+--track@warpamount:変形強度%,0,100,30,1,オフ
+--track@warprange:変形範囲px,1,8192,400,1
+--track@warplength:波長px,1,8192,160,1
+--track@warpx:変形中心X px,-32768,32768,0,1
+--track@warpy:変形中心Y px,-32768,32768,0,1
+--track@warpphase:変形位相°,-36000,36000,0,1
+--track@warpspeed:変形速度°/s,-3600,3600,0,1
+--check@warpreverse:変形を反転,false
+--check@individual:個別エフェクト,false
+--group
+--hide@individual:output>0
+--hide@warptype:warp==0
+--hide@warpamount:warp==0
+--hide@warprange:warp==0
+--hide@warplength:warp==0
+--hide@warpx:warp==0
+--hide@warpy:warp==0
+--hide@warpphase:warp==0
+--hide@warpspeed:warp==0
+--hide@warpreverse:warp==0
+--hide@warplength:warptype>=2
+
+--hide@paintb:morph==0
+--hide@fgb:morph==0
+--hide@color_seedb:morph==0
+--hide@colb1:morph==0
+--hide@colb2:morph==0
+--hide@colb3:morph==0
+--hide@colb4:morph==0
+--hide@weightb1:morph==0
+--hide@weightb2:morph==0
+--hide@weightb3:morph==0
+--hide@weightb4:morph==0
+--hide@fgb:paintb==1
+--hide@fgb:paintb==3
+--hide@fgb:paintb==4
+--hide@colb1:paintb~=1
+--hide@colb2:paintb~=1
+--hide@colb3:paintb~=1
+--hide@colb4:paintb~=1
+--hide@weightb1:paintb~=1
+--hide@weightb2:paintb~=1
+--hide@weightb3:paintb~=1
+--hide@weightb4:paintb~=1
+--hide@color_seedb:paintb~=1
+local render=require("ParametricBGCore")
+render(obj,{
+    mode=edge_random and 4 or 2,
+    custom=custom,
+    cw=cw,
+    ch=ch,
+    bg=bg,
+    transparent=transparent,
+    bga=bga,
+    opacity=opacity,
+    output=output,
+    marginx=marginx,
+    marginy=marginy,
+    whole=whole,
+    shapea=({0,1,2,8,4,9,10,3,5,6,7})[shapea+1],
+    filea=filea,
+    wa=wa,
+    ha=ha,
+    ra=ra,
+    depth=depth,
+    depth_angle=depth_angle,
+    linewidth=linewidth,
+    aa=aa,
+    tri=tri,
+    arm=arm,
+    star=star,
+    assetfit=assetfit,
+    sx=sx,
+    sy=sy,
+    stagger=stagger,
+    hexgrid=hexgrid,
+    gx=gx,
+    gy=gy,
+    ga=ga,
+    jitter=jitter,
+    density=density,
+    seed=seed,
+    minimum=minimum,
+    strength=strength,
+    reverse=reverse,
+    curve=curve,
+    morph=morph,
+    shapeb=({0,1,2,8,4,9,10,3,5,6,7})[shapeb+1],
+    fileb=fileb,
+    wb=wb,
+    hb=hb,
+    rb=rb,
+    ab=ab,
+    morph_source=morph_source,
+    morph_reverse=morph_reverse,
+    shortest=shortest,
+    mx=mx,
+    my=my,
+    ma=ma,
+    ml=ml,
+    paint=paint,
+    fg=fg,
+    col1=col1,
+    weight1=weight1,
+    col2=col2,
+    weight2=weight2,
+    col3=col3,
+    weight3=weight3,
+    col4=col4,
+    weight4=weight4,
+    color_seed=color_seed,
+    vx=vx,
+    vy=vy,
+    breath=breath,
+    period=period,
+    bp=bp,
+    gridalpha=gridalpha,
+    rx=rx,
+    ry=ry,
+    rw=rw,
+    rh=rh,
+    rot=rot,
+    boundary=({0,1,3,4,5,6,7,8,9,10,2})[boundary+1],
+    core=core,
+    soft=soft,
+    edge_density=edge_density,
+    outside_hide=outside_hide,
+    focus=focus,
+    boundaryfile=boundaryfile,
+    boundary_channel=boundary_channel,
+    gridcolor=gridcolor,
+    individual=individual,
+    trib=trib,
+    warp=warp,
+    warptype=warptype,
+    warpamount=warpamount,
+    warprange=warprange,
+    warplength=warplength,
+    warpx=warpx,
+    warpy=warpy,
+    warpphase=warpphase,
+    warpspeed=warpspeed,
+    warpreverse=warpreverse,
+    paintb=paintb,
+    fgb=fgb,
+    color_seedb=color_seedb,
+    colb1=colb1,
+    colb2=colb2,
+    colb3=colb3,
+    colb4=colb4,
+    weightb1=weightb1,
+    weightb2=weightb2,
+    weightb3=weightb3,
+    weightb4=weightb4
+})
