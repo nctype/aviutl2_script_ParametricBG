@@ -2,6 +2,8 @@
 
 [![demo](preview.webm)](https://github.com/user-attachments/assets/8b1daf86-ffef-4daf-b8f3-4b31ec194b39)
 
+▶️ [紹介動画(ニコニコ)](https://www.nicovideo.jp/watch/sm46989157)
+
 <details open>
 <summary><strong>日本語　▲ 🌐 Switch Language</strong></summary>
 
